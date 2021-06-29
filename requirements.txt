@@ -3,7 +3,7 @@ aiohttp
 aiofiles
 peewee
 sanic-jinja2
-websockets<10.0
+websockets
 
 # cli
 argh

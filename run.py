@@ -20,7 +20,7 @@ from functools import wraps
 from concurrent.futures._base import CancelledError
 from asyncio import Task
 
-import ujson
+import json
 import aiohttp
 import aiofiles
 
@@ -30,8 +30,8 @@ from websockets import WebSocketCommonProtocol
 from sanic import Sanic, response
 from sanic.exceptions import NotFound, abort
 from sanic.log import LOGGING_CONFIG_DEFAULTS
-from sanic.response import json
 
+from jinja2 import FileSystemLoader
 from sanic_jinja2 import SanicJinja2
 
 from peewee import fn
@@ -80,10 +80,11 @@ LOGGING_CONFIG_DEFAULTS["formatters"] = {
 task_logger = logging.getLogger("task")
 api_logger = logging.getLogger("api")
 
-app = Sanic()
+app = Sanic(__name__)
 app.static('/static', './static/')
 
-jinja = SanicJinja2(app)
+loader = FileSystemLoader(os.path.abspath(os.path.dirname(__file__)) + '/templates', encoding='utf8')
+jinja = SanicJinja2(app, loader=loader)
 
 # to avoid conflict with vue.js
 jinja.env.block_start_string = '<%'
@@ -102,6 +103,11 @@ subscriptions = defaultdict(list)
 #     some_job_id: {"worker": some_worker_id, "task": some_aio_task},
 # }
 jobs_in_memory_state = {}
+
+
+def datetime_to_epoch_json_converter(o):
+    if isinstance(o, datetime):
+        return o.strftime('%s')
 
 
 @asyncio.coroutine
@@ -473,13 +479,12 @@ async def broadcast(message, channels):
 
         for ws in ws_list:
             try:
-                await ws.send(ujson.dumps(message))
+                await ws.send(json.dumps(message, default=datetime_to_epoch_json_converter))
             except ConnectionClosed:
                 dead_ws.append(ws)
 
-    for to_remove in dead_ws:
-        ws_list.remove(to_remove)
-
+        for to_remove in dead_ws:
+            ws_list.remove(to_remove)
 
 def subscribe(ws, channel):
     subscriptions[channel].append(ws)
@@ -523,6 +528,7 @@ def chunks(l, n):
 
     yield chunk
 
+
 @app.websocket('/index-ws')
 @clean_websocket
 async def ws_index(request, websocket):
@@ -565,21 +571,21 @@ async def ws_index(request, websocket):
 
     first_chunck = next(data)
 
-    await websocket.send(ujson.dumps({
+    await websocket.send(json.dumps({
         "action": "init_jobs",
         "data": first_chunck,  # send first chunk
-    }))
+        }, default=datetime_to_epoch_json_converter))
 
     for chunk in data:
-        await websocket.send(ujson.dumps({
+        await websocket.send(json.dumps({
             "action": "init_jobs_stream",
             "data": chunk,
-        }))
+        }, default=datetime_to_epoch_json_converter))
 
     await websocket.wait_closed()
 
 
-@app.websocket('/job-<job_id>-ws')
+@app.websocket('/job-ws/<job_id:int>')
 @clean_websocket
 async def ws_job(request, websocket, job_id):
     job = Job.select().where(Job.id == job_id)
@@ -591,10 +597,10 @@ async def ws_job(request, websocket, job_id):
 
     subscribe(websocket, f"job-{job.id}")
 
-    await websocket.send(ujson.dumps({
+    await websocket.send(json.dumps({
         "action": "init_job",
         "data": model_to_dict(job),
-    }))
+    }, default=datetime_to_epoch_json_converter))
 
     await websocket.wait_closed()
 
@@ -691,15 +697,15 @@ async def ws_apps(request, websocket):
 
     repos = sorted(repos, key=lambda x: x["name"])
 
-    await websocket.send(ujson.dumps({
+    await websocket.send(json.dumps({
         "action": "init_apps",
         "data": repos,
-    }))
+    }, default=datetime_to_epoch_json_converter))
 
     await websocket.wait_closed()
 
 
-@app.websocket('/app-<app_name>-ws')
+@app.websocket('/app-ws/<app_name>')
 @clean_websocket
 async def ws_app(request, websocket, app_name):
     # XXX I don't check if the app exists because this websocket is supposed to
@@ -708,11 +714,11 @@ async def ws_app(request, websocket, app_name):
 
     subscribe(websocket, f"app-jobs-{app.url}")
 
-    await websocket.send(ujson.dumps({
+    job = list(Job.select().where(Job.url_or_path == app.url).order_by(-Job.id).dicts())
+    await websocket.send(json.dumps({
         "action": "init_jobs",
-        "data": Job.select().where(Job.url_or_path ==
-                                   app.url).order_by(-Job.id),
-    }))
+        "data": job,
+    }, default=datetime_to_epoch_json_converter))
 
     await websocket.wait_closed()
 
@@ -812,9 +818,7 @@ async def api_delete_job(request, job_id):
     return response.text("ok")
 
 
-@app.route("/api/job/<job_id:int>/stop", methods=['POST'])
-async def api_stop_job(request, job_id):
-    # TODO auth or some kind
+async def stop_job(job_id):
     job = Job.select().where(Job.id == job_id)
 
     if job.count() == 0:
@@ -867,10 +871,17 @@ async def api_stop_job(request, job_id):
                     f"{job.state}")
 
 
+@app.route("/api/job/<job_id:int>/stop", methods=['POST'])
+async def api_stop_job(request, job_id):
+    # TODO auth or some kind
+    await stop_job(job_id)
+
+
 @app.route("/api/job/<job_id:int>/restart", methods=['POST'])
 async def api_restart_job(request, job_id):
     api_logger.info(f"Request to restart job {job_id}")
-    await api_stop_job(request, job_id)
+    # Calling a route (eg api_stop_job) doesn't work anymore
+    await stop_job(job_id)
 
     # no need to check if job existss, api_stop_job will do it for us
     job = Job.select().where(Job.id == job_id)[0]
@@ -935,7 +946,7 @@ async def html_job(request, job_id):
     }
 
 
-@app.route('/apps/')
+@app.route('/apps/', strict_slashes=True) # To avoid reaching the route "/apps/<app_name>/" with <app_name> an empty string
 @jinja.template('apps.html')
 async def html_apps(request):
     return {'relative_path_to_root': '../', 'path': request.path}
@@ -970,7 +981,7 @@ async def monitor(request):
 
     tasks = Task.all_tasks()
 
-    return json({
+    return response.json({
         "top_20_trace": [str(x) for x in top_stats[:20]],
         "tasks": {
             "number": len(tasks),
@@ -1080,7 +1091,7 @@ async def github(request):
 
         token = open("./github_bot_token").read().strip()
         async with aiohttp.ClientSession(headers={"Authorization": f"token {token}"}) as session:
-            async with session.post(comments_url, data=ujson.dumps({"body": body})) as resp:
+            async with session.post(comments_url, data=json.dumps({"body": body}, default=datetime_to_epoch_json_converter)) as resp:
                 api_logger.info("Added comment %s" % resp.json()["html_url"])
 
     catchphrases = ["Alrighty!", "Fingers crossed!", "May the CI gods be with you!", ":carousel_horse:", ":rocket:", ":sunflower:", "Meow :cat2:", ":v:", ":stuck_out_tongue_winking_eye:" ]
@@ -1135,11 +1146,11 @@ def main(config="./config.py"):
         "MONTHLY_JOBS": False,
     }
 
-    app.config.from_object(default_config)
-    app.config.from_pyfile(config)
+    app.config.update_config(default_config)
+    app.config.update_config(config)
 
     if not os.path.exists(app.config.PATH_TO_ANALYZER):
-        print(f"Error: analyzer script doesn't exist at '{PATH_TO_ANALYZER}'. Please fix the configuration in {config}")
+        print(f"Error: analyzer script doesn't exist at '{app.config.PATH_TO_ANALYZER}'. Please fix the configuration in {config}")
         sys.exit(1)
 
     reset_pending_jobs()

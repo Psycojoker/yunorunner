@@ -44,7 +44,7 @@
             }
         })
 
-        ws = new ReconnectingWebSocket(websocketPrefix() + '://' + document.domain + ':' + location.port + websocketRelativePath('<{ path }>') + '/app-<{ app.name }>-ws');
+        ws = new ReconnectingWebSocket(websocketPrefix() + '://' + document.domain + ':' + location.port + websocketRelativePath('<{ path }>') + '/app-ws/<{ app.name }>');
 
         ws.onmessage = function (event) {
             var message = JSON.parse(event.data);
