@@ -22,6 +22,7 @@
             <tr><th>Created time</th><td>{{timestampToDate(job.created_time)}}</td></tr>
             <tr><th>Started time</th><td>{{timestampToDate(job.started_time)}}</td></tr>
             <tr><th>End time</th><td>{{timestampToDate(job.end_time)}}</td></tr>
+            <tr><th>Badge</th><td><img src="<{ shield_badge_url }>" alt="<{job.state}>" title="Click to copy its Markdown code" id="badge"/></td></tr>
         </table>
 
         <h2 class="subtitle">Execution log:</h2>
@@ -94,5 +95,20 @@
             }
         };
     })()
+</script>
+<script>
+    // Thanks to https://tech-wiki.online/fr/clipboard-api.html
+    document.querySelector('#badge').addEventListener('click', async event => {
+        if (!navigator.clipboard) {
+            // Clipboard API not available
+            return
+        }
+        const text = "[![Test Badge](https://img.shields.io/endpoint?url=https://ci.pijean.ovh/ci/api/job/<{ job.id }>/badge)](https://ci.pijean.ovh/ci/job/<{ job.id }>)"
+        try {
+            await navigator.clipboard.writeText(text)
+        } catch (err) {
+            console.error('Failed to copy Markdown code for the job badge', err)
+        }
+    })
 </script>
 <% endblock %>

@@ -924,12 +924,19 @@ async def html_job(request, job_id):
 
     job = job[0]
 
-    app = Repo.select().where(Repo.url == job.url_or_path)
-    app = app[0] if app else None
+    application = Repo.select().where(Repo.url == job.url_or_path)
+    application = application[0] if application else None
+
+    job_url = app.config.BASE_URL + app.url_for("html_job", job_id=job.id)
+    badge_url = app.config.BASE_URL + app.url_for("api_badge_job", job_id=job.id)
+    shield_badge_url = f"https://img.shields.io/endpoint?url={badge_url}"
 
     return {
         "job": job,
-        'app': app,
+        'app': application,
+        'job_url': job_url,
+        'badge_url': badge_url,
+        'shield_badge_url': shield_badge_url,
         'relative_path_to_root': '../',
         'path': request.path
     }
